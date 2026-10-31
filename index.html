@@ -19,7 +19,7 @@
   --bg:#12131f; --panel:#1b1d2f; --line:#2d2f47; --ink:#eae8f5; --sub:#8d8fb0;
   --gold:#e8c468;
   --p0:#e8556a; --p1:#4fb3e8; --p2:#5ec98a; --p3:#e8b84f;
-  --p4:#b385e8; --p5:#4fd9d0; --p6:#e88f4f; --p7:#e874c9;
+  --p4:#b385e8; --p5:#ff6a00; --p6:#4fd9d0; --p7:#e874c9;
 }
 *{box-sizing:border-box;}
 html,body{height:100%;}
@@ -239,11 +239,6 @@ body.tabs .screen.active{padding-bottom:calc(86px + env(safe-area-inset-bottom,0
 .pname.rm.other{opacity:.8;}
 .pname .selBtn{flex-shrink:0; min-width:52px; text-align:center;}
 .pname .selBtn.on{background:var(--gold); border-color:var(--gold); color:#1b1500; font-weight:700;}
-.pname .colIn{flex-shrink:0; width:30px; height:30px; padding:0; border:2px solid rgba(255,255,255,.35); border-radius:50%; background:none; cursor:pointer; overflow:hidden; -webkit-appearance:none; appearance:none;}
-.pname .colIn::-webkit-color-swatch-wrapper{padding:0;}
-.pname .colIn::-webkit-color-swatch{border:none; border-radius:50%;}
-.pname .colIn::-moz-color-swatch{border:none; border-radius:50%;}
-.pname .colIn:disabled{opacity:.45; cursor:default;}
 .pname input[type=text][readonly]{opacity:.75;}
 #scr-setup.roomMode #startBtnLocal{display:none;}
 #scr-setup.guestMode #strategicOptions, #scr-setup.guestMode #countCard{pointer-events:none; opacity:.72;}
@@ -279,7 +274,6 @@ body.tabs .screen.active{padding-bottom:calc(86px + env(safe-area-inset-bottom,0
 #scr-saves .svSub .pill{flex:1; padding:7px 8px;}
 #scr-saves .svSub .pill:disabled{opacity:.4;}
 #scr-saves .svSub .pill.warn{background:#7a2d2d; border-color:#c0504d; color:#fff;}
-.pname .colIn.bad{border-color:#ff6b5e; box-shadow:0 0 0 3px rgba(255,107,94,.4);}
 #saveListCard{display:none !important;}
 </style>
 </head>
@@ -432,9 +426,11 @@ body.tabs .screen.active{padding-bottom:calc(86px + env(safe-area-inset-bottom,0
   <div class="sheet">
     <h2 style="margin-top:0;">存檔命名</h2>
     <input type="text" id="saveNameInput" placeholder="例如：星期五四人局" style="width:100%;">
+    <p class="tag" id="saveOverNote" style="display:none; margin:10px 0 0; line-height:1.5; color:var(--gold);"></p>
     <div class="row" style="margin-top:12px; gap:8px; flex-wrap:nowrap;">
       <button class="pill" style="flex:1;" onclick="closeSaveOverlay()">取消</button>
-      <button class="big" style="flex:1;" onclick="confirmSave()">存檔</button>
+      <button class="pill" id="saveNewBtn" style="flex:1; display:none;" onclick="confirmSave(true)">另存新檔</button>
+      <button class="big" id="saveOkBtn" style="flex:1;" onclick="confirmSave()">存檔</button>
     </div>
   </div>
 </div>
@@ -607,9 +603,9 @@ function colorVar(i){ return `var(${COLORS[i]})`; }
 // ================= 連線房間：選單／房間分頁、大廳、回合快照同步 =================
 // 沒有後端：用公用 MQTT 轉送伺服器（WebSocket）傳訊息，房間名稱就是頻道名稱；同一個瀏覽器的不同分頁另外用 BroadcastChannel（方便測試）。
 // 遊戲同步：只有「輪到的那位」的裝置會改動棋局（電腦／AI 由房主的裝置代跑），每個動作後把變動的部分廣播給所有人，換人時整份交棒。
-const DEF_COLORS2 = ['#e8556a','#4fb3e8','#5ec98a','#e8b84f','#b385e8','#4fd9d0','#e88f4f','#e874c9'];
-const slotColors = Array(8).fill(null);     // 每個位置自訂的顏色（null＝預設色）
-function slotHex2(i){ return slotColors[i] || DEF_COLORS2[i]; }
+const DEF_COLORS2 = ['#e8556a','#4fb3e8','#5ec98a','#e8b84f','#b385e8','#ff6a00','#4fd9d0','#e874c9'];
+const slotColors = Array(8).fill(null);     // 舊版有「自訂顏色」，現在顏色固定（舊存檔／舊版房間傳來的自訂色一律忽略）；陣列保留只是為了讓同步格式相容
+function slotHex2(i){ return DEF_COLORS2[i]; }
 function onlResetColorCaches(){
   try{
     Object.keys(tintCache).forEach(k=>{ if(/^(tint_.+_|glow_)\d+$/.test(k)) delete tintCache[k]; });
@@ -619,38 +615,13 @@ function onlResetColorCaches(){
     if(typeof CVF!=='undefined') CVF.dirty = true;
   }catch(e){}
 }
-function applySlotColors2(arr){
+function applySlotColors2(){
   let ch = false; const st = document.documentElement.style;
   for(let i=0;i<8;i++){
-    const hex = (arr && /^#[0-9a-f]{6}$/i.test(arr[i]||'')) ? arr[i].toLowerCase() : DEF_COLORS2[i];
+    const hex = DEF_COLORS2[i];
     if((st.getPropertyValue(COLORS[i])||'').trim().toLowerCase() !== hex){ st.setProperty(COLORS[i], hex); ch = true; }
   }
   if(ch) onlResetColorCaches();
-}
-
-// ---------- 顏色太相近檢查（CIEDE2000 色差，小於門檻＝肉眼很難分辨）----------
-const ONL_COL_MIN = 12;          // 預設的 8 個顏色彼此最近也有 13.8；低於 12 的在棋盤上很容易看錯
-function onlLabOf(hex){
-  const c = onlLabOf.c = onlLabOf.c || {}; hex = String(hex).toLowerCase(); if(c[hex]) return c[hex];
-  const lin = v=>{ v /= 255; return v<=0.04045 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); };
-  const r = lin(parseInt(hex.slice(1,3),16)), g = lin(parseInt(hex.slice(3,5),16)), b = lin(parseInt(hex.slice(5,7),16));
-  const x = (0.4124564*r+0.3575761*g+0.1804375*b)/0.95047, y = 0.2126729*r+0.7151522*g+0.0721750*b, z = (0.0193339*r+0.1191920*g+0.9503041*b)/1.08883;
-  const f = t=>t>0.008856 ? Math.cbrt(t) : (7.787*t+16/116);
-  return (c[hex] = [116*f(y)-16, 500*(f(x)-f(y)), 200*(f(y)-f(z))]);
-}
-function onlDE(A, B){
-  const rad = Math.PI/180, [L1,a1,b1] = A, [L2,a2,b2] = B;
-  const C1 = Math.hypot(a1,b1), C2 = Math.hypot(a2,b2), Cb = (C1+C2)/2, G = 0.5*(1-Math.sqrt(Math.pow(Cb,7)/(Math.pow(Cb,7)+Math.pow(25,7))));
-  const a1p = (1+G)*a1, a2p = (1+G)*a2, C1p = Math.hypot(a1p,b1), C2p = Math.hypot(a2p,b2);
-  let h1 = Math.atan2(b1,a1p)/rad; if(h1<0) h1 += 360; let h2 = Math.atan2(b2,a2p)/rad; if(h2<0) h2 += 360;
-  const dL = L2-L1, dC = C2p-C1p; let dh = 0;
-  if(C1p*C2p!==0){ dh = h2-h1; if(dh>180) dh -= 360; else if(dh<-180) dh += 360; }
-  const dH = 2*Math.sqrt(C1p*C2p)*Math.sin(dh*rad/2), Lb = (L1+L2)/2, Cbp = (C1p+C2p)/2;
-  let hb; if(C1p*C2p===0) hb = h1+h2; else if(Math.abs(h1-h2)<=180) hb = (h1+h2)/2; else hb = (h1+h2<360) ? (h1+h2+360)/2 : (h1+h2-360)/2;
-  const T = 1-0.17*Math.cos((hb-30)*rad)+0.24*Math.cos(2*hb*rad)+0.32*Math.cos((3*hb+6)*rad)-0.20*Math.cos((4*hb-63)*rad);
-  const dt = 30*Math.exp(-Math.pow((hb-275)/25,2)), Rc = 2*Math.sqrt(Math.pow(Cbp,7)/(Math.pow(Cbp,7)+Math.pow(25,7)));
-  const Sl = 1+0.015*Math.pow(Lb-50,2)/Math.sqrt(20+Math.pow(Lb-50,2)), Sc = 1+0.045*Cbp, Sh = 1+0.015*Cbp*T, Rt = -Math.sin(2*dt*rad)*Rc;
-  return Math.sqrt(Math.pow(dL/Sl,2)+Math.pow(dC/Sc,2)+Math.pow(dH/Sh,2)+Rt*(dC/Sc)*(dH/Sh));
 }
 
 // ---------- 最小的 MQTT 3.1.1 用戶端（WebSocket，QoS 0）----------
@@ -800,30 +771,6 @@ ONL.canEdit = i=>{
   if(!ONL.on) return true;
   const c = ONL.claims[i];
   return ONL.role==='host' ? (!c || c===ONL_ID) : c===ONL_ID;
-};
-// 這個位置想用 hex 這個顏色：回傳「顏色太接近」的另一個位置編號（沒有衝突回 -1）；電腦／AI／沒人選的位置也算
-ONL.colorClash = (i, hex)=>{
-  const L = onlLabOf(hex);
-  for(let j=0;j<setupCount;j++){ if(j===i) continue; if(onlDE(L, onlLabOf(slotHex2(j)))<ONL_COL_MIN) return j; }
-  return -1;
-};
-ONL.slotLabel = j=>(slotNames[j]!==null && slotNames[j]!==undefined && slotNames[j]!=='') ? slotNames[j] : defaultName(slotTypes[j], j);
-ONL.colorWarn = j=>{ const t = Date.now(); if(t-(ONL.colorWarnT||0)<1500) return; ONL.colorWarnT = t; toast('已有人使用相近的顏色：'+ONL.slotLabel(j)); };
-// 房主：人數變多／載入設定後如果有兩個位置的顏色太接近，把自訂的那個改回預設色
-ONL.fixColors = ()=>{
-  if(!ONL.isHost() || ONL.resumeOn()) return false;
-  let any = false;
-  for(let pass=0;pass<3;pass++){
-    let ch = false;
-    for(let i=1;i<setupCount;i++) for(let j=0;j<i;j++){
-      if(onlDE(onlLabOf(slotHex2(i)), onlLabOf(slotHex2(j)))<ONL_COL_MIN){
-        if(slotColors[i]){ slotColors[i] = null; ch = true; } else if(slotColors[j]){ slotColors[j] = null; ch = true; }
-      }
-    }
-    if(!ch) break; any = true;
-  }
-  if(any) applySlotColors2(slotColors);
-  return any;
 };
 ONL.myPids = ()=>{ if(!S2 || !S2.seats) return []; return Object.keys(S2.seats).filter(k=>S2.seats[k]===ONL_ID).map(Number); };
 ONL.owns = pid=>{
@@ -1219,7 +1166,6 @@ function onlSettingsIn(s){
     slotTypes[i] = s.ty[i] || 'human';
     if(hold && i===my){ continue; }          // 自己剛改的名字／顏色，還沒被房主確認前不要被舊資料蓋掉
     slotNames[i] = (s.nm[i]===undefined) ? null : s.nm[i];
-    slotColors[i] = s.co[i] || null;
   }
   boardMode2 = s.bm || 'hidden'; endMode2 = s.em || 'round'; scoreMode2 = s.sm || 'land';
   const rl = document.getElementById('roundLimitInput'); if(rl) rl.value = s.rl || '30';
@@ -1334,18 +1280,7 @@ ONL.onMsg = m=>{
       const i = m.s|0;
       if(ONL.claims[i]!==m.f || slotTypes[i]!=='human') return;
       if(typeof m.nm==='string') slotNames[i] = m.nm==='' ? null : m.nm.slice(0, 12);
-      let rej = false;
-      if(typeof m.co==='string' && /^#[0-9a-f]{6}$/i.test(m.co) && !ONL.resumeOn()){
-        const c = m.co.toLowerCase();
-        if(ONL.colorClash(i, c)>=0) rej = true; else { slotColors[i] = c; applySlotColors2(slotColors); }
-      }
-      if(rej) NET.send({t:'colrej', to:m.f});
       ONL.pushLobby(true);
-      break;
-    }
-    case 'colrej': {                                          // 房主說這個顏色和別人太接近：放棄我剛改的顏色，換回房主那邊的
-      if(host || m.f!==ONL.hostId || m.to!==ONL_ID) return;
-      ONL.pend = null; ONL.sent = null; ONL.lastAppliedSig = ''; toast('已有人使用相近的顏色，沒有套用');
       break;
     }
     case 'leave': { if(!host) return; ONL.dropClient(m.f, true); break; }
@@ -1533,10 +1468,11 @@ ONL.loadSave = key=>{
     slotTypes[i] = p.isCPU ? ((st[i] && st[i]!=='human') ? st[i] : 'cpu') : 'human';
     slotNames[i] = p.name || null;
   });
-  for(let i=0;i<8;i++) slotColors[i] = (S.colors && /^#[0-9a-f]{6}$/i.test(S.colors[i]||'')) ? S.colors[i].toLowerCase() : null;   // 顏色也鎖成存檔當時的
   applySlotColors2(slotColors);
   ONL.claims = {};                                              // 位置重新選：每個人選回自己原本的那一格
-  ONL.resume = {key, S, name: name || '存檔', round: S.round};
+  const sdi = document.getElementById('seedInput');
+  ONL.resume = {key, S, name: name || '存檔', round: S.round, prevSeed: ONL.resume ? ONL.resume.prevSeed : (sdi ? sdi.value : '')};
+  if(sdi) sdi.value = S.seedCode || '';                         // 選單的種子碼欄顯示這個存檔的種子碼
   renderBoardModeToggle(); renderEndModeToggle(); renderScoreModeToggle();
   ONL.pushLobby(true); renderSetup(); ONL.renderRoom();
   toast('已載入存檔：'+(name || '存檔')+'（第 '+S.round+' 回合）');
@@ -1544,6 +1480,7 @@ ONL.loadSave = key=>{
 };
 ONL.cancelResume = ()=>{
   if(!ONL.isHost() || !ONL.resume) return;
+  { const sdi = document.getElementById('seedInput'); if(sdi) sdi.value = ONL.resume.prevSeed || ''; }
   ONL.resume = null; ONL.pushLobby(true); renderSetup(); ONL.renderRoom();
   toast('已取消接續，可以改開新局');
 };
@@ -1565,6 +1502,7 @@ ONL.startResume = ()=>{
   S.singleHuman = S.players.filter(p=>!p.isCPU).length <= 1;
   resetCounters2(); hexRotReset(); getAudioCtx(); stopReplay2(); fastMode = false; fullAuto = false; sel2 = null; slingTarget2 = null;
   cancelLater(cpuTimer); closeMenu();
+  { const sdi = document.getElementById('seedInput'); if(sdi) sdi.value = R.prevSeed || ''; }   // 開始後種子碼欄還原（之後開新局不會沿用存檔的種子碼）
   S2 = S; ONL.resume = null; ONL.resumeInfo = null;
   ONL.phase = 'game'; ONL.taken = {}; ONL.out = null; ONL.sentHL = 0; ONL.lastSig = '';
   ONL.live = true; ONL.gameLive = false;
@@ -1676,7 +1614,6 @@ ONL.build = (full, h, need, over, opt)=>{
   const hp = full ? 0 : Math.min(ONL.sentHL, hl);
   const m = {t:'snap', S:o, full:!!full, hp, ht:hist.slice(hp), pn:performance.now(), k:[S2.tn||0, S2.sv||0], gid:S2.gid};
   if(h) m.h = 1; if(need) m.need = need; if(over) m.over = 1;
-  if(full) m.col = slotColors.slice(0,8);
   if(opt){ if(opt.to) m.to = opt.to; if(opt.rs) m.rs = 1; }
   if(!(opt && opt.rs)) ONL.sentHL = hl;
   return m;
@@ -1732,7 +1669,6 @@ ONL.onSnap = m=>{
   const off = performance.now() - m.pn;
   if(m.full && typeof S2.waterT0==='number') S2.waterT0 += off;
   if(S2.waterBorn){ Object.keys(S2.waterBorn).forEach(k=>{ if(typeof S2.waterBorn[k]==='number') S2.waterBorn[k] += off; }); }
-  if(m.full && m.col){ for(let i=0;i<8;i++) slotColors[i] = m.col[i]; applySlotColors2(slotColors); }
   ONL.live = true; ONL.gameLive = true; ONL.phase = 'game';
   onlApplyTaken();
   if(sel2 && (!S2.cells[sel2])) sel2 = null;
@@ -2052,22 +1988,30 @@ function loadAndStart(key){
     Object.keys(localStorage).filter(k=>/^echoAIBrain_/.test(k)).forEach(k=>localStorage.removeItem(k));
   }catch(e){}
 })();
+function saveTarget2(){ if(!S2 || !S2.saveKey) return null; return getSaveIndex().find(x=>x.key===S2.saveKey) || null; }   // 這一局已經存過／是從存檔接續的：回傳那筆存檔
 function openSaveOverlay(){
-  document.getElementById('saveNameInput').value = '';
+  const ex = saveTarget2(), nm = document.getElementById('saveNameInput');
+  nm.value = ex ? ex.name : '';
+  document.getElementById('saveOverNote').style.display = ex ? '' : 'none';
+  if(ex) document.getElementById('saveOverNote').textContent = '這一局是從存檔「'+ex.name+'」來的（或已經存過）：按「覆蓋存檔」會直接更新那一筆；想留著舊的，按「另存新檔」。';
+  document.getElementById('saveNewBtn').style.display = ex ? '' : 'none';
+  document.getElementById('saveOkBtn').textContent = ex ? '覆蓋存檔' : '存檔';
+  document.querySelector('#saveOverlay h2').textContent = ex ? '覆蓋存檔' : '存檔命名';
   document.getElementById('saveOverlay').classList.add('show');
 }
 let exitAfterSave = false;
 function closeSaveOverlay(){ exitAfterSave = false; document.getElementById('saveOverlay').classList.remove('show'); }
-function confirmSave(){
+function confirmSave(asNew){
   if(ONL.live && !ONL.isHost()){ closeSaveOverlay(); toast('只有房主能存檔'); return; }   // 聯機：訪客不能存檔
-  const name = document.getElementById('saveNameInput').value.trim() || ('存檔 '+new Date().toLocaleString());
-  const ok = saveGame2(name);
+  const ex = asNew ? null : saveTarget2();
+  const name = document.getElementById('saveNameInput').value.trim() || (ex ? ex.name : ('存檔 '+new Date().toLocaleString()));
+  const ok = saveGame2(name, !!asNew);
   const wantExit = exitAfterSave;
   document.getElementById('saveOverlay').classList.remove('show');
   exitAfterSave = false;
   renderSaveList();
   if(ok){
-    toast('已存檔：'+name);
+    toast((ex ? '已覆蓋存檔：' : '已存檔：')+name);
     if(wantExit) exitToMenu();
   } else {
     toast('存檔失敗（可能是儲存空間已滿）');
@@ -2234,18 +2178,17 @@ function renderSetup(){
   const sc = document.getElementById('scr-setup');
   const rsm = room && ONL.resumeOn();            // 接續存檔：設定鎖成存檔的內容
   sc.classList.toggle('roomMode', room); sc.classList.toggle('guestMode', !host); sc.classList.toggle('resumeMode', !!rsm);
-  if(room && host) ONL.fixColors();            // 人數變多等情況：顏色太接近的自訂色改回預設
   ['seedInput','roundLimitInput'].forEach(id=>{ const e = document.getElementById(id); if(e) e.readOnly = !host || !!rsm; });
   ONL.renderBanner();
   const ae = document.activeElement;
-  if(room && ae && ((ae.classList && ae.classList.contains('colIn')) || /^pname\d$/.test(ae.id||''))){ ONL.setupDirty = true; return; }   // 正在打字／選顏色：先不重畫，免得鍵盤或選色盤被關掉
+  if(room && ae && /^pname\d$/.test(ae.id||'')){ ONL.setupDirty = true; return; }   // 正在打字：先不重畫，免得鍵盤被關掉
   ONL.setupDirty = false;
   const hint = document.getElementById('playerSetupHint');
   if(hint){
     if(!hint._orig) hint._orig = hint.innerHTML;
     hint.innerHTML = room ? (host
-      ? '每個玩家前面的「選擇」：按下後這格就是你的（顯示 ✓、金色框），只有你能改它的名字與顏色；再按一次取消。名字右邊的按鈕只有房主能切換：玩家 → 電腦 → AI✩ → AI✮。顏色不能和別人太接近。'
-      : '按「選擇」認領一個玩家位置（✓、金色框＝你的），之後只有你能改它的名字與顏色（顏色不能和別人太接近）；電腦與 AI 的位置不能選。其他設定都由房主決定。')
+      ? '每個玩家前面的「選擇」：按下後這格就是你的（顯示 ✓、金色框），只有你能改它的名字；再按一次取消。名字右邊的按鈕只有房主能切換：玩家 → 電腦 → AI✩ → AI✮。'
+      : '按「選擇」認領一個玩家位置（✓、金色框＝你的），之後只有你能改它的名字；電腦與 AI 的位置不能選。其他設定都由房主決定。')
       : hint._orig;
   }
   const cr = document.getElementById('countRow'); cr.innerHTML='';
@@ -2268,18 +2211,8 @@ function renderSetup(){
       sb.disabled = !!other || slotTypes[i]!=='human';
       sb.onclick = ()=>ONL.claim(i);
       row.appendChild(sb);
-      const ci=document.createElement('input'); ci.type='color'; ci.className='colIn'; ci.value = slotHex2(i); ci.disabled = !can || !!rsm; ci.setAttribute('aria-label','顏色');
-      ci.oninput = ()=>{
-        const v = ci.value.toLowerCase(), j = ONL.colorClash(i, v);
-        if(j>=0){ ci._bad = true; ci.classList.add('bad'); ONL.colorWarn(j); return; }          // 和別人的顏色太接近：不套用
-        ci._bad = false; ci.classList.remove('bad');
-        slotColors[i] = v; applySlotColors2(slotColors); ONL.localEdit(i);
-      };
-      ci.onchange = ci.onblur = ()=>{ if(ci._bad){ ci._bad = false; ci.classList.remove('bad'); ci.value = slotHex2(i); } redo(); };
-      row.appendChild(ci);
-    } else {
-      const dot=document.createElement('div'); dot.className='dot'; dot.style.background=colorVar(i); row.appendChild(dot);
     }
+    const dot=document.createElement('div'); dot.className='dot'; dot.style.background=colorVar(i); row.appendChild(dot);
     const inp=document.createElement('input'); inp.type='text'; inp.id='pname'+i; inp.maxLength = 12;
     inp.value = slotNames[i]!==null ? slotNames[i] : defaultName(slotTypes[i], i);
     inp.readOnly = !can || !!rsm;
@@ -4898,6 +4831,27 @@ function hexPoly2(wrap, k){
 }
 function cvCancelTween(){ if(CV.tween){ cancelAnimationFrame(CV.tween); CV.tween = 0; } }
 // 主迴圈：有變動（手勢、狀態）就重畫；只有水紋／瀑布／脈動等小動畫時，依速度降低重畫頻率（放得越大越密，縮小越稀）
+const cvGov = {last:0, n:0, s:0, floor:0, wait:30000, lastDown:0, probed:0};     // floor：瀑布重畫間隔的下限（毫秒）：0＝每個畫面都畫、33、50
+function cvGovTick(now){
+  const G = cvGov, dt = G.last ? now - G.last : 0; G.last = now;
+  const live = [CV, CVF].filter(I=>{ const w = I.wrap(); return !!(w && w.clientWidth && cvOnI(I) && I.sc); });      // 現在看得到的畫布（結算回放的那張平常是隱藏的）
+  const fall = live.some(I=>I.fl && I.fl.fall);
+  if(!dt || dt > 400 || !fall || live.some(I=>I.gest())){ G.n = 0; G.s = 0; return; }      // 手勢中有自己的降解析度機制；沒有瀑布、剛切回分頁／剛載入的長間隔都不算
+  if(live.some(I=>I.dirty || I.missing) || cvColQ.length){ G.calm = now; G.n = 0; G.s = 0; return; }   // 畫面剛有變動／圖片還在準備（剛開局、剛縮放）：那是一次性的負擔，不算
+  if(now - (G.calm || 0) < 1500){ G.n = 0; G.s = 0; return; }
+  G.n++; if(dt > 24) G.s++;                                                // 畫面間隔超過 24ms＝掉到 41 張/秒以下
+  if(G.n < 90) return;                                                     // 每 90 個畫面（約 1.5 秒）結算一次：一兩次偶發的卡頓（例如剛載入圖片）不算
+  const bad = G.s >= 45; G.n = 0; G.s = 0;                                 // 一半以上的畫面都慢（平均掉到約 35 張/秒以下）＝這台跑不動全速
+  if(bad){
+    if(G.floor < 50){
+      if(G.probed && now - G.probed < 8000) G.wait = Math.min(600000, G.wait*2);     // 剛升上去就又卡：下次等更久
+      G.floor = G.floor ? 50 : 33; G.lastDown = now; G.probed = 0;
+    }
+    return;
+  }
+  if(G.probed && now - G.probed > 8000){ G.probed = 0; G.wait = 30000; }            // 升上去之後撐過 8 秒：算成功
+  if(G.floor && now - G.lastDown > G.wait){ G.floor = G.floor === 50 ? 33 : 0; G.probed = now; G.lastDown = now; }
+}
 function cvTick(I, now){
   if(!cvOnI(I) || !I.sc) return;
   const w = I.wrap(); if(!w || !w.clientWidth) return;
@@ -4905,7 +4859,7 @@ function cvTick(I, now){
   if(!need){
     const S = I.viewOf(I.sc).s*I.sc.k*I.dpr, fl = I.fl || {}; let iv = Infinity;
     if(I.animating) iv = 0;
-    if(fl.fall) iv = Math.min(iv, Math.max(50, Math.min(400, 0.8/(21.8*S)*1000)));
+    if(fl.fall) iv = Math.min(iv, Math.max(cvGov.floor, Math.min(400, 0.8/(21.8*S)*1000)));
     if(fl.wave) iv = Math.min(iv, Math.max(33, Math.min(400, 0.8/(4*S)*1000)));
     if(fl.pulse || fl.dots) iv = Math.min(iv, 50);
     if(fl.splash) iv = Math.min(iv, 33);
@@ -4950,7 +4904,8 @@ function cvFallback(e){
 }
 function cvLoop(now){
   requestAnimationFrame(cvLoop);
-  if(document.hidden) return;
+  if(document.hidden){ cvGov.last = 0; return; }
+  cvGovTick(now);
   cvBuildCols(3);
   cvTick(CV, now); cvTick(CVF, now);
 }
@@ -5968,18 +5923,21 @@ function peekStats2(){
 }
 
 function progressSig2(){ return [S2.round, S2.turnIdx, S2.phase, S2.pickIdx||0, Object.keys(S2.cells).filter(k=>S2.cells[k].owner!==null).length].join('|'); }
-function saveGame2(name){
+function saveGame2(name, asNew){
   flushCounters2();
-  const key='echoSave_'+Date.now();
-  let prevSig=S2.savedSig;
+  let idx = getSaveIndex();
+  const ex = (!asNew && S2.saveKey) ? idx.find(x=>x.key===S2.saveKey) : null;      // 這一局已經有存檔：覆蓋它，不另外建新的
+  const key = ex ? ex.key : 'echoSave_'+Date.now();
+  const prevSig = S2.savedSig, prevKey = S2.saveKey;
   try{
-    prevSig=S2.savedSig; S2.savedSig=progressSig2();
+    S2.savedSig = progressSig2(); S2.saveKey = key;
     localStorage.setItem(key, JSON.stringify(Object.assign({}, S2, {colors: slotColors.slice(0,8)})));
-    const idx=getSaveIndex();
-    idx.unshift({key,name,round:S2.round,players:S2.players.length,engine:'strategic',online:!!S2.online});
+    idx = idx.filter(x=>x.key!==key);
+    idx.unshift({key, name: name || (ex && ex.name) || '存檔', round:S2.round, players:S2.players.length, engine:'strategic', online:!!S2.online});
+    idx.slice(20).forEach(x=>{ try{ localStorage.removeItem(x.key); }catch(e){} });
     setSaveIndex(idx.slice(0,20));
     return true;
-  }catch(e){ S2.savedSig=prevSig; return false; }
+  }catch(e){ S2.savedSig = prevSig; S2.saveKey = prevKey; return false; }
 }
 function applySetup2(cfg){
   setupCount=cfg.count; endMode2=cfg.endMode; boardMode2=cfg.boardMode||'hidden'; scoreMode2=cfg.scoreMode||'land';
